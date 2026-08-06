@@ -137,7 +137,7 @@ Saat ini adalah hari Selasa, 4 Agustus 2026.
 `;
 
 const model = genAI.getGenerativeModel({
-    model: "gemini-1.5-flash",
+    model: "gemini-3.5-flash",
     tools: geminiTools,
     systemInstruction: SYSTEM_PROMPT
 });
