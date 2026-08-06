@@ -1,4 +1,5 @@
 require('dotenv').config();
+const { startBaileys, getSock } = require('./baileys');
 const express = require('express');
 const axios = require('axios');
 const OpenAI = require('openai');
@@ -160,7 +161,14 @@ async function sendWhatsAppText(to, text) {
     } catch (e) { console.error("Gagal kirim pesan:", e.message); }
 }
 
-async function processMessage(senderPhone, messageObj) {
+async function sendBaileysText(to, text) {
+  try {
+    const sock = getSock();
+    if (sock) await sock.sendMessage(to, { text });
+  } catch (e) { console.error("Gagal kirim pesan Baileys:", e.message); }
+}
+
+async function processMessage(senderPhone, messageObj, replyFn = sendWhatsAppText) { {
     if (!userSessions.has(senderPhone)) {
         userSessions.set(senderPhone, [{ role: "system", content: SYSTEM_PROMPT }]);
     }
@@ -168,7 +176,7 @@ async function processMessage(senderPhone, messageObj) {
 
     if (messageObj.type === 'location') {
         console.log(`[SYSTEM] Menerima Share Loc dari ${senderPhone}`);
-        await sendWhatsAppText(senderPhone, "Mantap Daeng! Titik lokasi ta' (Share Loc) sudah kami terima. Terapis kami akan segera meluncur sesuai jadwal. Terima kasih!");
+        await replyFn(senderPhone, "Mantap Daeng! Titik lokasi ta' (Share Loc) sudah kami terima. Terapis kami akan segera meluncur sesuai jadwal. Terima kasih!");
         return; 
     }
 
@@ -225,7 +233,7 @@ async function processMessage(senderPhone, messageObj) {
             const finalReply = responseMessage.content;
             history.push({ role: "assistant", content: finalReply });
             
-            await sendWhatsAppText(senderPhone, finalReply);
+            await replyFn(senderPhone, finalReply);
 
         } catch (e) {
             console.error("Error AI:", e);
@@ -246,10 +254,30 @@ app.post('/webhook', (req, res) => {
     const body = req.body;
     if (body.object === 'whatsapp_business_account' && body.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
         const message = body.entry[0].changes[0].value.messages[0];
-        processMessage(message.from, message);
+        processMessage(message.from, message, sendWhatsAppText);
     }
     res.sendStatus(200); 
 });
+// ================================================
+// 6. BAILEYS (WHATSAPP TESTING - HP ISTRI)
+// ================================================
+const QR_PASSWORD = process.env.QR_PASSWORD || 'gantidulu123';
 
+app.get('/qr', (req, res) => {
+  const pass = req.query.pass;
+  if (pass !== QR_PASSWORD) {
+    return res.status(401).send('<h2>Password salah. Tambahkan ?pass=passwordkamu di URL</h2>');
+  }
+  const { getQR, getStatus } = require('./baileys');
+  const qr = getQR();
+  const status = getStatus();
+  if (status === 'connected') return res.send('<h2>Sudah terhubung ke WhatsApp!</h2>');
+  if (!qr) return res.send('<h2>QR belum siap, refresh beberapa detik lagi</h2>');
+  res.send(`<h2>Scan QR ini dari WhatsApp HP istri</h2><img src="${qr}" />`);
+});
+
+startBaileys((from, text, sock) => {
+  processMessage(from, { type: 'text', text: { body: text } }, sendBaileysText);
+});
 app.listen(PORT, () => console.log(`🚀 Daeng Baco AI (Recovery Edition) aktif di port ${PORT}`));
 
