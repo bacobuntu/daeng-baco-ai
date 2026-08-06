@@ -1,8 +1,7 @@
 require('dotenv').config();
 const { startBaileys, getSock } = require('./baileys');
 const express = require('express');
-const axios = require('axios');
-const OpenAI = require('openai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 app.use(express.json());
@@ -11,19 +10,14 @@ const PORT = process.env.PORT || 3000;
 // ==========================================
 // 1. PENGATURAN KUNCI (API KEYS)
 // ==========================================
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const WA_API_URL = `https://graph.facebook.com/v18.0/${process.env.WA_PHONE_NUMBER_ID}/messages`;
-const WA_HEADERS = {
-    'Authorization': `Bearer ${process.env.WA_TOKEN}`,
-    'Content-Type': 'application/json'
-};
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // ==========================================
 // 2. DATABASE SIMULASI (JADWAL HOME SERVICE)
 // ==========================================
 let jadwalTerapis = {
-    "Rabu": ["09:00 (Pagi)", "13:00 (Siang)", "16:00 (Sore)"], 
-    "Kamis": ["09:00 (Pagi)", "16:00 (Sore)"], 
+    "Rabu": ["09:00 (Pagi)", "13:00 (Siang)", "16:00 (Sore)"],
+    "Kamis": ["09:00 (Pagi)", "16:00 (Sore)"],
     "Jumat": ["13:00 (Siang)", "16:00 (Sore)"]
 };
 
@@ -37,63 +31,57 @@ function cekJadwalKosong(hari) {
     console.log(`[SYSTEM] Mengecek slot Home Service untuk ${hari}...`);
     const jadwal = jadwalTerapis[hari];
     if (jadwal && jadwal.length > 0) {
-        return JSON.stringify({ status: "tersedia", slot_kosong: jadwal });
+        return { status: "tersedia", slot_kosong: jadwal };
     } else {
-        return JSON.stringify({ status: "penuh", pesan: `Maaf, slot terapis keliling untuk hari ${hari} sudah penuh.` });
+        return { status: "penuh", pesan: `Maaf, slot terapis keliling untuk hari ${hari} sudah penuh.` };
     }
 }
 
 function buatReservasiHomeService(namaPelanggan, nomorWA, hari, jam, alamat, layanan) {
     console.log(`[SYSTEM] Memproses pesanan dari ${namaPelanggan}...`);
-    
+
     const jadwalHariItu = jadwalTerapis[hari];
     if (jadwalHariItu && jadwalHariItu.includes(jam)) {
-        
+
         jadwalTerapis[hari] = jadwalHariItu.filter(j => j !== jam);
         const idPesanan = "HS-" + Math.floor(Math.random() * 10000);
-        
-        daftarOrder.push({ 
-            id: idPesanan, 
-            nama: namaPelanggan, 
-            wa: nomorWA, 
-            hari: hari, 
-            jam: jam, 
+
+        daftarOrder.push({
+            id: idPesanan,
+            nama: namaPelanggan,
+            wa: nomorWA,
+            hari: hari,
+            jam: jam,
             alamat: alamat,
             layanan: layanan,
-            status: "Menunggu Share Loc" 
+            status: "Menunggu Share Loc"
         });
-        
-        return JSON.stringify({ 
-            status: "sukses", 
-            id_pesanan: idPesanan, 
-            pesan: `Reservasi berhasil dicatat (ID: ${idPesanan})! Terapis akan datang pada ${hari} jam ${jam} untuk layanan ${layanan}. INSTRUKSI UNTUK AI: Beritahu pelanggan bahwa reservasi berhasil, LALU mintalah mereka mengirimkan 'Share Lokasi' (Share Loc) WhatsApp ke nomor ini agar terapis mudah menemukan rumahnya.` 
-        });
+
+        return {
+            status: "sukses",
+            id_pesanan: idPesanan,
+            pesan: `Reservasi berhasil dicatat (ID: ${idPesanan})! Terapis akan datang pada ${hari} jam ${jam} untuk layanan ${layanan}. INSTRUKSI UNTUK AI: Beritahu pelanggan bahwa reservasi berhasil, LALU mintalah mereka mengirimkan 'Share Lokasi' (Share Loc) WhatsApp ke nomor ini agar terapis mudah menemukan rumahnya.`
+        };
     } else {
-         return JSON.stringify({ 
-            status: "gagal", 
-            pesan: `Slot jam ${jam} pada hari ${hari} baru saja dibooking orang lain. Arahkan untuk pilih jam lain.` 
-        });
+        return {
+            status: "gagal",
+            pesan: `Slot jam ${jam} pada hari ${hari} baru saja dibooking orang lain. Arahkan untuk pilih jam lain.`
+        };
     }
 }
 
-const tools = [
-    {
-        type: "function",
-        function: {
+const geminiTools = [{
+    functionDeclarations: [
+        {
             name: "cek_jadwal_kosong",
             description: "Cek jadwal terapis yang tersedia pada hari tertentu.",
             parameters: {
                 type: "object",
-                properties: {
-                    hari: { type: "string" }
-                },
+                properties: { hari: { type: "string" } },
                 required: ["hari"]
             }
-        }
-    },
-    {
-        type: "function",
-        function: {
+        },
+        {
             name: "buat_reservasi_home_service",
             description: "Panggil ini JIKA SEMUA info terkumpul: Nama, Hari, Jam, Alamat Teks, dan Layanan.",
             parameters: {
@@ -108,8 +96,8 @@ const tools = [
                 required: ["nama_pelanggan", "hari", "jam", "alamat", "layanan"]
             }
         }
-    }
-];
+    ]
+}];
 
 // ==========================================
 // 4. LOGIKA AI (DAENG BACO)
@@ -148,91 +136,69 @@ Setelah kamu berhasil membuat reservasi (fungsi buat_reservasi memberikan status
 Saat ini adalah hari Selasa, 4 Agustus 2026.
 `;
 
+const model = genAI.getGenerativeModel({
+    model: "gemini-1.5-flash",
+    tools: geminiTools,
+    systemInstruction: SYSTEM_PROMPT
+});
+
 const userSessions = new Map();
 
-async function sendWhatsAppText(to, text) {
-    try {
-        await axios.post(WA_API_URL, {
-            messaging_product: 'whatsapp',
-            to: to,
-            type: 'text',
-            text: { body: text }
-        }, { headers: WA_HEADERS });
-    } catch (e) { console.error("Gagal kirim pesan:", e.message); }
-}
-
 async function sendBaileysText(to, text) {
-  try {
-    const sock = getSock();
-    if (sock) await sock.sendMessage(to, { text });
-  } catch (e) { console.error("Gagal kirim pesan Baileys:", e.message); }
+    try {
+        const sock = getSock();
+        if (sock) await sock.sendMessage(to, { text });
+    } catch (e) { console.error("Gagal kirim pesan Baileys:", e.message); }
 }
 
-async function processMessage(senderPhone, messageObj, replyFn = sendWhatsAppText) { 
+async function processMessage(senderPhone, messageObj, replyFn = sendBaileysText) {
     if (!userSessions.has(senderPhone)) {
-        userSessions.set(senderPhone, [{ role: "system", content: SYSTEM_PROMPT }]);
+        userSessions.set(senderPhone, []);
     }
     let history = userSessions.get(senderPhone);
 
     if (messageObj.type === 'location') {
         console.log(`[SYSTEM] Menerima Share Loc dari ${senderPhone}`);
         await replyFn(senderPhone, "Mantap Daeng! Titik lokasi ta' (Share Loc) sudah kami terima. Terapis kami akan segera meluncur sesuai jadwal. Terima kasih!");
-        return; 
+        return;
     }
 
     if (messageObj.type === 'text') {
         const incomingText = messageObj.text.body;
-        history.push({ role: "user", content: incomingText });
 
         try {
-            let response = await openai.chat.completions.create({
-                model: "gpt-4o",
-                messages: history,
-                tools: tools,
-                tool_choice: "auto",
-            });
+            const chat = model.startChat({ history: history });
+            let result = await chat.sendMessage(incomingText);
+            let response = result.response;
+            let functionCalls = response.functionCalls();
 
-            let responseMessage = response.choices[0].message;
+            while (functionCalls && functionCalls.length > 0) {
+                const call = functionCalls[0];
+                let functionResult = {};
 
-            while (responseMessage.tool_calls) {
-                history.push(responseMessage);
-
-                for (const toolCall of responseMessage.tool_calls) {
-                    const functionName = toolCall.function.name;
-                    const functionArgs = JSON.parse(toolCall.function.arguments);
-                    let functionResult = "";
-
-                    if (functionName === "cek_jadwal_kosong") {
-                        functionResult = cekJadwalKosong(functionArgs.hari);
-                    } else if (functionName === "buat_reservasi_home_service") {
-                        functionResult = buatReservasiHomeService(
-                            functionArgs.nama_pelanggan, 
-                            senderPhone, 
-                            functionArgs.hari, 
-                            functionArgs.jam,
-                            functionArgs.alamat,
-                            functionArgs.layanan
-                        );
-                    }
-
-                    history.push({
-                        tool_call_id: toolCall.id,
-                        role: "tool",
-                        name: functionName,
-                        content: functionResult,
-                    });
+                if (call.name === "cek_jadwal_kosong") {
+                    functionResult = cekJadwalKosong(call.args.hari);
+                } else if (call.name === "buat_reservasi_home_service") {
+                    functionResult = buatReservasiHomeService(
+                        call.args.nama_pelanggan,
+                        senderPhone,
+                        call.args.hari,
+                        call.args.jam,
+                        call.args.alamat,
+                        call.args.layanan
+                    );
                 }
 
-                response = await openai.chat.completions.create({
-                    model: "gpt-4o",
-                    messages: history,
-                });
-                responseMessage = response.choices[0].message;
+                result = await chat.sendMessage([{
+                    functionResponse: { name: call.name, response: functionResult }
+                }]);
+                response = result.response;
+                functionCalls = response.functionCalls();
             }
 
-            const finalReply = responseMessage.content;
-            history.push({ role: "assistant", content: finalReply });
-            
+            const finalReply = response.text();
+            userSessions.set(senderPhone, await chat.getHistory());
+
             await replyFn(senderPhone, finalReply);
 
         } catch (e) {
@@ -242,7 +208,7 @@ async function processMessage(senderPhone, messageObj, replyFn = sendWhatsAppTex
 }
 
 // ==========================================
-// 5. WEBHOOK META
+// 5. WEBHOOK META (belum aktif, disiapkan untuk nanti)
 // ==========================================
 app.get('/webhook', (req, res) => {
     if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === process.env.VERIFY_TOKEN) {
@@ -251,33 +217,29 @@ app.get('/webhook', (req, res) => {
 });
 
 app.post('/webhook', (req, res) => {
-    const body = req.body;
-    if (body.object === 'whatsapp_business_account' && body.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
-        const message = body.entry[0].changes[0].value.messages[0];
-        processMessage(message.from, message, sendWhatsAppText);
-    }
-    res.sendStatus(200); 
+    res.sendStatus(200);
 });
+
 // ================================================
 // 6. BAILEYS (WHATSAPP TESTING - HP ISTRI)
 // ================================================
 const QR_PASSWORD = process.env.QR_PASSWORD || 'gantidulu123';
 
 app.get('/qr', (req, res) => {
-  const pass = req.query.pass;
-  if (pass !== QR_PASSWORD) {
-    return res.status(401).send('<h2>Password salah. Tambahkan ?pass=passwordkamu di URL</h2>');
-  }
-  const { getQR, getStatus } = require('./baileys');
-  const qr = getQR();
-  const status = getStatus();
-  if (status === 'connected') return res.send('<h2>Sudah terhubung ke WhatsApp!</h2>');
-  if (!qr) return res.send('<h2>QR belum siap, refresh beberapa detik lagi</h2>');
-  res.send(`<h2>Scan QR ini dari WhatsApp HP istri</h2><img src="${qr}" />`);
+    const pass = req.query.pass;
+    if (pass !== QR_PASSWORD) {
+        return res.status(401).send('<h2>Password salah. Tambahkan ?pass=passwordkamu di URL</h2>');
+    }
+    const { getQR, getStatus } = require('./baileys');
+    const qr = getQR();
+    const status = getStatus();
+    if (status === 'connected') return res.send('<h2>Sudah terhubung ke WhatsApp!</h2>');
+    if (!qr) return res.send('<h2>QR belum siap, refresh beberapa detik lagi</h2>');
+    res.send(`<h2>Scan QR ini dari WhatsApp HP istri</h2><img src="${qr}" />`);
 });
 
 startBaileys((from, text, sock) => {
-  processMessage(from, { type: 'text', text: { body: text } }, sendBaileysText);
+    processMessage(from, { type: 'text', text: { body: text } }, sendBaileysText);
 });
-app.listen(PORT, () => console.log(`🚀 Daeng Baco AI (Recovery Edition) aktif di port ${PORT}`));
 
+app.listen(PORT, () => console.log(`🚀 Daeng Baco AI (Gemini Edition) aktif di port ${PORT}`));
