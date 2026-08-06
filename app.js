@@ -168,7 +168,7 @@ async function sendBaileysText(to, text) {
   } catch (e) { console.error("Gagal kirim pesan Baileys:", e.message); }
 }
 
-async function processMessage(senderPhone, messageObj, replyFn = sendWhatsAppText) { {
+async function processMessage(senderPhone, messageObj, replyFn = sendWhatsAppText) { 
     if (!userSessions.has(senderPhone)) {
         userSessions.set(senderPhone, [{ role: "system", content: SYSTEM_PROMPT }]);
     }
