@@ -1,12 +1,23 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason } = require('@whiskeysockets/baileys');
+const { useMongoDBAuthState } = require('mongo-baileys');
+const { MongoClient } = require('mongodb');
 const QRCode = require('qrcode');
 
 let latestQR = null;
 let sock = null;
 let connectionStatus = 'disconnected';
+let mongoClient = null;
 
 async function startBaileys(onMessage) {
-  const { state, saveCreds } = await useMultiFileAuthState('baileys_auth');
+  if (!mongoClient) {
+    mongoClient = new MongoClient(process.env.MONGODB_URI);
+    await mongoClient.connect();
+    console.log('[SYSTEM] Terhubung ke MongoDB untuk sesi Baileys');
+  }
+
+  const collection = mongoClient.db('daengbaco').collection('baileys_sessions');
+  const { state, saveCreds } = await useMongoDBAuthState(collection);
+
   sock = makeWASocket({ auth: state, printQRInTerminal: false });
 
   sock.ev.on('creds.update', saveCreds);
